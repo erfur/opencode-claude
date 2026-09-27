@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0 - 2026-09-27
+
+- **Fix: one idle project cut off turns in the others**: OpenCode closes idle
+  projects every few minutes, and each close stopped the proxy that every
+  project shares. Running turns elsewhere were cut mid-work and rebuilt, and
+  now and then failed outright. The proxy now stays up while any project
+  uses it.
+- **Thinking shows up while Claude thinks**: Claude Code streamed empty
+  thinking blocks, so the chat stayed silent for as long as Claude reasoned
+  and then the answer landed at once. Thinking summaries now stream into the
+  reasoning block, same as in t3code.
+- The model list is refreshed from the CLI at most every ten minutes instead
+  of on every plugin start.
+
 ## 1.1.1 - 2026-09-26
 
 - **Fix: phantom "attachments" while tools run**: OpenCode 2.x sends images a

@@ -66,8 +66,23 @@ async function main() {
       },
     } as any);
     assert.equal(seen.strictMcpConfig, true);
-    assert.deepEqual(seen.settings, { disableClaudeAiConnectors: true });
+    assert.equal(seen.settings.disableClaudeAiConnectors, true);
     assert.equal(seen.persistSession, false);
+
+    // Thinking streams as summaries unless thinking is off
+    assert.equal(seen.settings.showThinkingSummaries, true);
+    assert.deepEqual(seen.extraArgs, { "thinking-display": "summarized" });
+    await startClaudeQuery({
+      prompt: "x",
+      cwd: process.cwd(),
+      thinking: { type: "disabled" },
+      queryImpl: () => (input: any) => {
+        seen = input.options;
+        return (async function* () {})();
+      },
+    } as any);
+    assert.equal(seen.extraArgs, undefined);
+    assert.equal(seen.settings?.showThinkingSummaries, undefined);
   }
 
   // Usage: the final message_delta count wins over the opening snapshot
