@@ -98,6 +98,27 @@ const SHARED_PROXY_HEALTH_TIMEOUT_MS = 750;
  */
 const PARK_QUIET_MS = 3_000;
 
+/**
+ * The CLI starts a message's tool calls only after message_stop, a few
+ * microseconds apart. Once the message is closed, wait this long at most
+ * for the rest of the group it announced before handing off what arrived.
+ */
+const PARK_SETTLE_MS = 300;
+
+/**
+ * How many calls the CLI starts together for a message whose tool_use
+ * blocks are `names`: the leading run of readOnlyHint tools, or the first
+ * call alone when it is not one of them.
+ */
+export function expectedParallelGroup(names: string[]): number {
+  let run = 0;
+  for (const name of names) {
+    if (!PARALLEL_SAFE_TOOLS.has(name)) break;
+    run += 1;
+  }
+  return Math.max(1, run);
+}
+
 const STRUCTURED_OUTPUT_TOOL = "StructuredOutput";
 
 /**
@@ -703,15 +724,28 @@ async function handleChatCompletions(
   // the event it carries is not lost.
   let pendingNext: Promise<IteratorResult<unknown>> | null = null;
 
+  // OpenCode tool names of the tool_use blocks in the current message.
+  let messageToolNames: string[] = [];
+
   const trackMessageState = (event: unknown) => {
     if (!event || typeof event !== "object") return;
     const e = event as Record<string, unknown>;
     // Only the stream's message_stop closes the message: the CLI emits an
     // `assistant` event after every content block, not once per message.
     if (e.type === "stream_event" && e.event && typeof e.event === "object") {
-      const type = (e.event as { type?: unknown }).type;
-      if (type === "message_start") messageOpen = true;
-      if (type === "message_stop") messageOpen = false;
+      const ev = e.event as { type?: unknown; content_block?: { type?: unknown; name?: unknown } };
+      if (ev.type === "message_start") {
+        messageOpen = true;
+        messageToolNames = [];
+      }
+      if (ev.type === "message_stop") messageOpen = false;
+      if (
+        ev.type === "content_block_start" &&
+        ev.content_block?.type === "tool_use" &&
+        typeof ev.content_block.name === "string"
+      ) {
+        messageToolNames.push(ev.content_block.name.replace(/^mcp__opencode__/, ""));
+      }
     }
   };
 
@@ -1020,6 +1054,8 @@ async function handleChatCompletions(
     // Set once the calls are handed to OpenCode. A stream that ends or fails
     // while a park is still held is a dead turn, not a parked one.
     let handedOff = false;
+    // The settle window ran out: hand off whatever the group has.
+    let settled = false;
     try {
       while (true) {
         // Parked and the message is closed: hand every collected call to
@@ -1027,7 +1063,14 @@ async function handleChatCompletions(
         // may run side by side (readOnlyHint ones); here they are only
         // forwarded, and OpenCode runs one response's calls concurrently.
         const holding = parked && pendingTools.size > 0;
-        if (holding && !messageOpen) {
+        // Closed message: hand off once the CLI has started the whole group
+        // it runs together, or when the settle window below runs out.
+        if (
+          holding &&
+          !messageOpen &&
+          (settled || pendingTools.size >= expectedParallelGroup(messageToolNames))
+        ) {
+          settled = false;
           armParkReap();
           handedOff = true;
           yield { type: "__park__", tools: [...pendingTools.values()] };
@@ -1036,20 +1079,21 @@ async function handleChatCompletions(
         const parkControl = {
           cancel: null as (() => void) | null,
         };
+        // Every registration wakes the loop: the first parks the turn, later
+        // ones may complete the group being held.
         const parkPromise = new Promise<void>((resolve) => {
-          // Already parked: the message close decides, not another park.
-          if (holding) return;
           const entry = () => resolve();
           parkWaiters.push(entry);
           parkControl.cancel = () => {
             parkWaiters = parkWaiters.filter((w) => w !== entry);
           };
         });
-        // Holding and the CLI went quiet: the message will not close by itself.
+        // Holding: an open message that goes quiet will not close by itself;
+        // a closed one only needs a moment for its sibling calls to start.
         let quietTimer: ReturnType<typeof setTimeout> | null = null;
         const quietPromise = new Promise<void>((resolve) => {
           if (!holding) return;
-          quietTimer = setTimeout(resolve, PARK_QUIET_MS);
+          quietTimer = setTimeout(resolve, messageOpen ? PARK_QUIET_MS : PARK_SETTLE_MS);
           quietTimer.unref?.();
         });
 
@@ -1108,6 +1152,7 @@ async function handleChatCompletions(
         }
         if (raced.kind === "quiet") {
           pendingNext = nextPromise;
+          if (!messageOpen) settled = true;
           messageOpen = false;
           continue;
         }

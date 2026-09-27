@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1 - 2026-09-27
+
+- **Fix: parallel tool calls mostly ran one by one**: Claude Code starts a
+  message's tool calls only after the message ends, microseconds apart, and
+  the plugin handed off the first call before the rest had started. About two
+  of three read/grep/subagent groups were split into separate steps. The
+  plugin now waits for the whole group Claude announced (at most 300 ms), so
+  they reach OpenCode together.
+
 ## 1.2.0 - 2026-09-27
 
 - **Fix: one idle project cut off turns in the others**: OpenCode closes idle
