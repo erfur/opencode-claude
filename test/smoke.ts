@@ -1018,6 +1018,20 @@ async function main() {
   );
   assert.equal(requestHeaders["x-opencode-claude-session"], "ses_test");
   assert.equal(PROVIDER_ID, "claude-code");
+  // Evicting one OpenCode location must not stop the proxy another still uses
+  {
+    const { acquireProxy, releaseProxy, proxyHolderCount } = await import("../src/proxy.ts");
+    await stopProxy();
+    const first = await acquireProxy();
+    const second = await acquireProxy();
+    assert.equal(first, second, "locations share one proxy");
+    await releaseProxy();
+    assert.equal(proxyHolderCount(), 1);
+    assert.equal(getProxyPort(), first, "still listening for the other location");
+    await releaseProxy();
+    assert.equal(getProxyPort(), null, "last location stops it");
+  }
+
   // Proxy health (without Agent SDK turn)
   await stopProxy();
   const port = await startProxy();

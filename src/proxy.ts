@@ -302,6 +302,29 @@ export async function startProxy(): Promise<number> {
   }
 }
 
+/**
+ * One proxy serves every OpenCode location (project) in the process, but each
+ * location runs its own plugin instance and OpenCode tears idle locations
+ * down every few minutes. Instances hold a reference; only the last release
+ * stops the proxy, so evicting one idle project never kills a turn that is
+ * running in another.
+ */
+let proxyHolders = 0;
+
+export async function acquireProxy(): Promise<number> {
+  proxyHolders += 1;
+  return startProxy();
+}
+
+export async function releaseProxy(): Promise<void> {
+  proxyHolders = Math.max(0, proxyHolders - 1);
+  if (proxyHolders === 0) await stopProxy();
+}
+
+export function proxyHolderCount(): number {
+  return proxyHolders;
+}
+
 export async function stopProxy(): Promise<void> {
   // Parked turns each hold a live claude CLI child; nothing resumes them now.
   clearAllBridges();

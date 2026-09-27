@@ -41,8 +41,9 @@ import {
 import { listClaudeSupportedModels } from "./query.js";
 import {
   getClaudeProxyBaseUrl,
+  acquireProxy,
+  releaseProxy,
   startProxy,
-  stopProxy,
 } from "./proxy.js";
 
 export function applyClaudeRequestContextHeaders(
@@ -103,7 +104,15 @@ export function buildProviderInfo(baseURL: string): ProviderInfo {
   } as unknown as ProviderInfo;
 }
 
+// OpenCode starts a plugin instance per location and recycles idle ones, so
+// setup runs many times a day; the account's model list rarely changes.
+const MODEL_REFRESH_INTERVAL_MS = 10 * 60_000;
+let lastModelRefresh = 0;
+
 async function refreshModelCatalog(reload: () => Promise<void>) {
+  const now = Date.now();
+  if (now - lastModelRefresh < MODEL_REFRESH_INTERVAL_MS) return;
+  lastModelRefresh = now;
   try {
     const rows = await listClaudeSupportedModels();
     if (!rows?.length) return;
@@ -147,7 +156,7 @@ export const ClaudeCodePlugin: Plugin.Plugin = {
     // Bind first (ephemeral port by default) so the provider points at the
     // live listener for this process.
     try {
-      await startProxy();
+      await acquireProxy();
     } catch (err) {
       log.error(
         "[opencode-claude] proxy failed to start",
@@ -203,7 +212,7 @@ export const ClaudeCodePlugin: Plugin.Plugin = {
       });
     });
 
-    return () => stopProxy();
+    return () => releaseProxy();
   },
 };
 
