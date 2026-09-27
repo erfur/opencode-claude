@@ -29,7 +29,7 @@ import {
   decodeClaudeModelSelection,
   EFFORT_HEADER,
 } from "./model-selection.js";
-import { getClaudeModels, resolveClaudeModelId } from "./models.js";
+import { getClaudeModels, modelNameFromId, resolveClaudeModelId } from "./models.js";
 import {
   DIRECTORY_HEADER,
   KIND_HEADER,
@@ -553,6 +553,49 @@ function logTurnUsage(
 }
 
 /**
+ * Claude Code retried a refused request on another model and, for scope
+ * "session", keeps using it. The plugin entry moves the OpenCode session to
+ * that model so what OpenCode shows matches what Claude Code runs.
+ */
+type ModelFallbackHandler = (sessionId: string, modelId: string, variant?: string) => void;
+let modelFallbackHandler: ModelFallbackHandler | null = null;
+
+export function setModelFallbackHandler(handler: ModelFallbackHandler | null): void {
+  modelFallbackHandler = handler;
+}
+
+/** Catalog id for the CLI's fallback model, keeping the 1M variant if picked. */
+export function catalogIdForFallback(fallback: string, original: string): string {
+  const ids = new Set(getClaudeModels().map((m) => m.id));
+  const base = fallback.replace(/\[1m\]$/i, "");
+  const wants1M = /\[1m\]$/i.test(original);
+  for (const candidate of wants1M ? [`${base}[1m]`, base] : [base, `${base}[1m]`]) {
+    if (ids.has(candidate)) return candidate;
+  }
+  return fallback;
+}
+
+export function modelFallbackNote(event: {
+  original_model?: string;
+  fallback_model?: string;
+  api_refusal_category?: string | null;
+}): string {
+  const from = modelNameFromId(event.original_model) ?? event.original_model ?? "The selected model";
+  const to = modelNameFromId(event.fallback_model) ?? event.fallback_model ?? "another model";
+  const why = event.api_refusal_category ? ` (${event.api_refusal_category})` : "";
+  return `\n[model] ${from} declined this request${why}; ${to} answered, and Claude Code keeps using it in this session.\n`;
+}
+
+const gateChecked = new Set<string>();
+
+function rememberGateCheck(key: string): void {
+  gateChecked.add(key);
+  if (gateChecked.size > 500) {
+    gateChecked.delete(gateChecked.values().next().value as string);
+  }
+}
+
+/**
  * OpenCode v2 names the request kind through the plugin's model.request hook.
  * Stateless generation (/api/experimental/generate) bypasses session hooks,
  * so a request with neither the kind nor the session header is one of those.
@@ -820,8 +863,15 @@ async function handleChatCompletions(
   // Retry-After instead of spawning a doomed Agent SDK turn (which would
   // surface as a fake "completed" assistant message and burn time).
   // Placed after input validation so malformed requests still get 400.
+  // The stored limit can be stale: the user may have reset their limits
+  // early. Each new user message is checked against Claude once (a limited
+  // account is refused before any generation); OpenCode's automatic retries
+  // of the same request stay blocked until the reset.
+  const gateKey = `${conversationKey}:${messages.length}`;
   const gate = rateLimitGate();
-  if (gate.blocked) {
+  const alreadyTried = gateChecked.has(gateKey);
+  rememberGateCheck(gateKey);
+  if (gate.blocked && alreadyTried) {
     log.warn("[opencode-claude] rate-limit gate blocked a turn", {
       conversationKey,
       retryAfterSeconds: gate.retryAfterSeconds,
@@ -883,6 +933,22 @@ async function handleChatCompletions(
       : undefined;
 
   const bridgeOpenCodeTools = !isMetaRequest && openCodeTools.length > 0;
+  // The tool bridge failed to build: Claude would be told to use OpenCode
+  // tools that do not exist. Claude Code's own tools are never a fallback,
+  // so say what happened instead of running a turn without tools.
+  if (bridgeOpenCodeTools && !mcpServers) {
+    return Response.json(
+      {
+        error: {
+          message:
+            "Claude Code could not load OpenCode's tools for this turn, so it was not started. Check the opencode-claude debug log, then retry.",
+          type: "server_error",
+          code: "claude_tool_bridge_failed",
+        },
+      },
+      { status: 503 },
+    );
+  }
   const openCodeToolNames = openCodeTools
     .map((t) => t.function?.name)
     .filter((n): n is string => typeof n === "string" && n.length > 0);
@@ -1167,6 +1233,29 @@ async function handleChatCompletions(
           });
         }
         logTurnUsage(event, { conversationKey, metaKind, model: queryModel });
+        const fallback = event as {
+          type?: string;
+          subtype?: string;
+          scope?: string;
+          original_model?: string;
+          fallback_model?: string;
+        };
+        if (
+          fallback.type === "system" &&
+          fallback.subtype === "model_refusal_fallback" &&
+          fallback.scope !== "local" &&
+          fallback.fallback_model &&
+          sessionHeader &&
+          !isMetaRequest
+        ) {
+          const target = catalogIdForFallback(fallback.fallback_model, fallback.original_model ?? model);
+          log.info("[opencode-claude] Claude Code switched models after a refusal", {
+            conversationKey,
+            from: fallback.original_model,
+            to: target,
+          });
+          modelFallbackHandler?.(sessionHeader, target, selection.effort);
+        }
         yield event;
       }
     } finally {
@@ -2068,6 +2157,10 @@ function mapSdkEvent(event: unknown, state?: MapState): MappedEvent {
     const state = recordRateLimitInfo(rawInfo);
     const note = maybeRateLimitNote(state, rawInfo);
     return note ? { kind: "reasoning", text: note } : { kind: "ignore" };
+  }
+
+  if (e.type === "system" && e.subtype === "model_refusal_fallback") {
+    return { kind: "reasoning", text: modelFallbackNote(e as Parameters<typeof modelFallbackNote>[0]) };
   }
 
   // Auto-compact boundary — surface as a short reasoning note for the UI.

@@ -84,6 +84,22 @@ export function deleteBridge(id: string): void {
   bridges.delete(id);
 }
 
+/**
+ * The OpenCode session stopped (user abort, shutdown, supersede) while its
+ * turn was parked on tool calls: nothing will resume it, so close the turn
+ * and its claude process now instead of waiting for the TTL reaper.
+ */
+export function closeSessionBridges(sessionId: string): number {
+  let closed = 0;
+  for (const bridge of [...bridges.values()]) {
+    if (bridge.conversationKey === sessionId) {
+      deleteBridge(bridge.id);
+      closed += 1;
+    }
+  }
+  return closed;
+}
+
 export function clearAllBridges(): void {
   for (const id of [...bridges.keys()]) {
     deleteBridge(id);

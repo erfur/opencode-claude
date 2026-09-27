@@ -39,10 +39,12 @@ import {
   type SdkModelRow,
 } from "./models.js";
 import { listClaudeSupportedModels } from "./query.js";
+import { closeSessionBridges } from "./bridge-pool.js";
 import {
   getClaudeProxyBaseUrl,
   acquireProxy,
   releaseProxy,
+  setModelFallbackHandler,
   startProxy,
 } from "./proxy.js";
 
@@ -80,7 +82,15 @@ export function buildProviderModel(model: ClaudeModel, id: string): ModelInfo {
     cost: [],
     status: "active",
     enabled: true,
-    limit: { context: model.contextWindow, output: model.maxTokens },
+    limit: {
+      context: model.contextWindow,
+      // OpenCode compacts at input - buffer when an input limit is set;
+      // without one a 1M window only compacts near its very edge.
+      ...(model.contextWindow >= 1_000_000
+        ? { input: Math.round(model.contextWindow * 0.9) }
+        : {}),
+      output: model.maxTokens,
+    },
   } as unknown as ModelInfo;
 }
 
@@ -125,6 +135,41 @@ async function refreshModelCatalog(reload: () => Promise<void>) {
       err instanceof Error ? err.message : err,
     );
   }
+}
+
+/**
+ * Close a session's parked turn as soon as OpenCode stops the session. A turn
+ * parked on tool calls has no open HTTP request, so an abort never reaches the
+ * proxy otherwise and the claude process lingered until the TTL reaper.
+ */
+function watchSessionInterrupts(ctx: Plugin.Context): () => void {
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        const e = event as { type?: string; data?: { sessionID?: string } };
+        if (
+          (e.type === "session.execution.interrupted" || e.type === "session.execution.failed") &&
+          e.data?.sessionID
+        ) {
+          const closed = closeSessionBridges(e.data.sessionID);
+          if (closed) {
+            log.info("[opencode-claude] closed the parked turn of a stopped session", {
+              sessionID: e.data.sessionID,
+            });
+          }
+        }
+      }
+    } catch (err) {
+      if (!controller.signal.aborted) {
+        log.warn(
+          "[opencode-claude] session event stream ended",
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+  })();
+  return () => controller.abort();
 }
 
 /** Registration-time URL; model.request replaces it with the live one. */
@@ -212,7 +257,27 @@ export const ClaudeCodePlugin: Plugin.Plugin = {
       });
     });
 
-    return () => releaseProxy();
+    const stopWatching = watchSessionInterrupts(ctx);
+    // Claude Code already moved the session to its fallback model; move the
+    // OpenCode session too so the picker and the next turns match it.
+    setModelFallbackHandler((sessionID, modelId, variant) => {
+      void ctx.session
+        .switchModel({
+          sessionID,
+          model: { id: modelId, providerID: PROVIDER_ID, ...(variant ? { variant } : {}) },
+        })
+        .catch((err: unknown) =>
+          log.warn(
+            "[opencode-claude] could not switch the session to the fallback model",
+            err instanceof Error ? err.message : err,
+          ),
+        );
+    });
+
+    return async () => {
+      stopWatching();
+      await releaseProxy();
+    };
   },
 };
 

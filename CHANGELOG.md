@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.2 - 2026-09-27
+
+- **Fix: "Retrying" after limits were reset**: the plugin kept blocking turns
+  until the old reset time, even after Claude reported the limit open again
+  or the user reset their limits early. An "allowed" update from Claude now
+  lifts the block, and every new message is checked with Claude once;
+  OpenCode's automatic retries of the same request still wait.
+- **Stopping a session stops Claude**: aborting while a tool runs now closes
+  the turn and its `claude` process right away instead of after an hour.
+- **Model switches after a refusal are visible**: when Claude Code retries a
+  refused request on another model (Fable → Opus), a note appears in the
+  reasoning and the OpenCode session moves to the model that is answering.
+- **Earlier compaction on 1M models**: they declare a 900k input limit, so
+  OpenCode compacts around 90% instead of at the very edge.
+- **Clear error when tools can't load**: a turn whose OpenCode tools failed
+  to load now fails with a message instead of running without tools.
+
+Thanks to @samiralibabic, @MTEKode, @mradwankhalil and @android6, whose PRs
+and issues pointed at these.
+
 ## 1.2.1 - 2026-09-27
 
 - **Fix: parallel tool calls mostly ran one by one**: Claude Code starts a
