@@ -137,6 +137,17 @@ async function main() {
     assert.deepEqual(withImage.message.content.map((b: any) => b.type), ["text", "image"]);
   }
 
+  // Code Mode catalog: only that section of OpenCode's system prompt is kept
+  {
+    const { codeModeCatalog } = await import("../src/request-kind.ts");
+    const system = "You are an AI agent running in OpenCode.\n\n# Your Model\nclaude-code\n\n# Code Mode\n\nUse the `execute` tool to call the tools listed below.\n\n## Available tools\ntools.openchamber - Control OpenChamber\n\n# Skills\nfoo";
+    const catalog = codeModeCatalog([{ role: "system", content: system }, { role: "user", content: "hi" }]);
+    assert.match(catalog, /^# Code Mode/);
+    assert.match(catalog, /tools\.openchamber/);
+    assert.doesNotMatch(catalog, /Your Model|running in OpenCode|# Skills/);
+    assert.equal(codeModeCatalog([{ role: "user", content: "hi" }]), "");
+  }
+
   // Request kinds: hooked session requests vs stateless generation
   {
     const plain = [{ role: "user", content: "Write a commit message" }];

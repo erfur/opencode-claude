@@ -77,6 +77,7 @@ import {
 import {
   detectMetaRequestKind,
   metaSystemPrompt,
+  codeModeCatalog,
   type MetaRequestKind,
   requestKeyNamespace,
 } from "./request-kind.js";
@@ -1011,6 +1012,7 @@ async function handleChatCompletions(
       : promptAsStream(mainPrompt);
 
   const hasTodoWrite = openCodeToolNames.includes("todowrite");
+  const codeMode = openCodeToolNames.includes("execute") ? codeModeCatalog(messages) : "";
   // Generation is an explicit model choice by the caller; keep it.
   const queryModel =
     metaKind === "title" || metaKind === "summary" ? META_REQUEST_MODEL : model;
@@ -1072,6 +1074,9 @@ async function handleChatCompletions(
                       : []),
                   ].join(" "),
                 ]
+              : []),
+            ...(bridgeOpenCodeTools && codeMode
+              ? [`${codeMode}\n\nThe \`execute\` tool above is mcp__opencode__execute.`]
               : []),
           ].join("\n\n"),
         },

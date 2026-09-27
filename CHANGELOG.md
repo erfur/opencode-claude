@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.3 - 2026-09-27
+
+- **Fix: Claude didn't know about MCP and OpenChamber tools**: OpenCode 2.x
+  reaches MCP servers, OpenChamber's tools and the browser through its
+  `execute` tool, and lists them in a Code Mode section of its own system
+  prompt, which the plugin doesn't forward. Claude only saw a bare `execute`
+  and had to guess. That one section, the tool catalog, now reaches Claude;
+  the rest of OpenCode's prompt still doesn't.
+
 ## 1.2.2 - 2026-09-27
 
 - **Fix: "Retrying" after limits were reset**: the plugin kept blocking turns
